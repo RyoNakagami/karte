@@ -1,0 +1,120 @@
+# Workflow: runs after a pull request targeting `main` is closed.
+# Purpose: when a PR is merged, tag the merge commit with the version from
+# pyproject.toml and publish a GitHub Release using notes from CHANGELOG.md.
+name: Post Pull Request Processing
+
+# Triggers:
+#   - pull_request (closed) against `main`. Note that `closed` fires for BOTH
+#     merged and abandoned PRs; the `merged == true` guard below filters those.
+#   - workflow_dispatch: manual kick from the Actions tab (run it on `main`),
+#     e.g. to re-release after a failed run or tag a version merged without a PR.
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed  # PR closure event
+  workflow_dispatch:
+
+# `contents: write` is required to push tags and create a GitHub Release.
+permissions:
+  contents: write
+
+jobs:
+  post_merge:
+    # Run for manual dispatch, or for PRs that were actually merged
+    # (skip PRs closed without merging).
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 0: Check out the full history (fetch-depth: 0) so tags and the
+      # merge commit are available for tagging.
+      - name: Checkout main branch
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Set the committer identity used for the tag(s) created below.
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # -------------------------------
+      # Step 1: Python toolchain setup
+      # -------------------------------
+      # Install uv (fast Python package/runtime manager); cache its downloads
+      # to speed up subsequent runs.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      # Install the Python version declared in pyproject.toml so `uv run`
+      # below uses a consistent interpreter.
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      # -------------------------------
+      # Step 2: Determine the release version
+      # -------------------------------
+      # Read `project.version` from pyproject.toml and expose it three ways:
+      #   - VERSION   -> env var for later shell steps
+      #   - version   -> step output (bare version, e.g. 1.2.3)
+      #   - tag       -> step output (tag form, e.g. v1.2.3)
+      - name: Extract version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+
+      # -------------------------------
+      # Step 3: Build release notes from CHANGELOG.md
+      # -------------------------------
+      # Extract the section for the current version (## [x.y.z] ... up to the
+      # next "## " heading) and write it to release_notes.md for the release body.
+      # NOTE: uses `python3` directly rather than `uv run python` as in Step 2 —
+      # consider making these consistent.
+      - name: Extract release notes to file
+        run: |
+          python3 - <<'EOF'
+          import re
+          changelog = open("CHANGELOG.md").read()
+          version = "${{ steps.version.outputs.version }}"
+          pattern = rf"## \[{re.escape(version)}\].*?(?=\n## |\Z)"
+          match = re.search(pattern, changelog, re.DOTALL)
+          notes = match.group(0).strip() if match else ""
+          open("release_notes.md", "w").write(notes)
+          EOF
+
+      # -------------------------------
+      # Step 4: Create and push the annotated tag
+      # -------------------------------
+      # NOTE: the two `git config` lines here are redundant — identity is
+      # already set in "Configure Git identity" above.
+      - name: Create and push tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" \
+            -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      # -------------------------------
+      # Step 5: Publish the GitHub Release
+      # -------------------------------
+      # FIX: this step was previously indented under the Step 4 `run:` block,
+      # so YAML parsed it as part of the shell script instead of a real step.
+      # It is now dedented to the correct step level.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:  ${{ steps.version.outputs.tag }}
+          name:      ${{ steps.version.outputs.tag }}
+          body_path: release_notes.md

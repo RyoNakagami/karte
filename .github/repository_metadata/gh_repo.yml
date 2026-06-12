@@ -1,0 +1,14 @@
+meta-data:
+  repository_name: karte
+  visibility: public
+  org-name: RyoNakagami
+  tag:
+    - uv
+    - Python
+    - CLI
+    - TODO
+    - ticket-manager
+  description: |
+    per-repository personal TODO/ticket manager.
+  homepage: null
+  license: mit

@@ -1,0 +1,41 @@
+# Workflow: dependency vulnerability audit on pull requests targeting `main`.
+# Purpose: run `uv audit` against uv.lock so a PR cannot merge dependencies
+# with known vulnerabilities (or adverse project statuses) into `main`.
+# NOTE: `uv audit` is experimental as of uv 0.11.x and may change without
+# warning; pin/update the uv version below deliberately.
+name: Package Audit
+
+on:
+  pull_request:
+    branches:
+      - main
+  # Manual kick from the Actions tab (e.g. re-check against newly published
+  # advisories without opening a PR).
+  workflow_dispatch:
+
+# Read-only: the audit only inspects the lockfile.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      # --locked also asserts that uv.lock is in sync with pyproject.toml,
+      # so a PR that edits dependencies without re-locking fails here too.
+      - name: Audit dependencies
+        run: uv audit --locked
